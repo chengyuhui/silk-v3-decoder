@@ -37,6 +37,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include "SKP_Silk_SDK_API.h"
 #include "SKP_Silk_SigProc_FIX.h"
 
@@ -96,15 +97,36 @@ unsigned long GetHighResolutionTime() /* O: time in usec*/
 }
 #endif // _WIN32
 
+/** WAV header */
+typedef struct {
+    char RiffMagic[4]; // "RIFF"
+    uint32_t FileSize;
+    char FormatMagic[4]; // "WAVE"
+
+    char FormatChunk_Magic[4]; // "fmt "
+    uint32_t FormatChunk_Size; // 16
+    uint16_t FormatChunk_Format; // 1 - PCM
+    uint16_t FormatChunk_Channels;
+    uint32_t FormatChunk_SampleRate;
+    uint32_t FormatChunk_ByteRate; // (Sample Rate * (BitsPerSample / 8) * Channels)
+    uint16_t FormatChunk_BytesPerSample; // 1 - 8 bit mono, 2 - 8 bit stereo/16 bit mono, 4 - 16 bit stereo
+    uint16_t FormatChunk_BitsPerSample;
+
+    char DataChunk_Magic[4]; // "data"
+    uint32_t DataChunk_Size;
+} wav_header_t;
+
+const uint32_t WAV_FORMAT_CHUNK_SIZE = 16;
+
 /* Seed for the random number generator, which is used for simulating packet loss */
 static SKP_int32 rand_seed = 1;
 
 static void print_usage(char* argv[]) {
     printf( "\nVersion:20160922    Build By kn007 (kn007.net)");
     printf( "\nGithub: https://github.com/kn007/silk-v3-decoder\n");
-    printf( "\nusage: %s in.bit out.pcm [settings]\n", argv[ 0 ] );
+    printf( "\nusage: %s in.bit out.wav [settings]\n", argv[ 0 ] );
     printf( "\nin.bit       : Bitstream input to decoder" );
-    printf( "\nout.pcm      : Speech output from decoder" );
+    printf( "\nout.wav      : Speech output from decoder" );
     printf( "\n   settings:" );
     printf( "\n-Fs_API <Hz> : Sampling rate of output signal in Hz; default: 24000" );
     printf( "\n-loss <perc> : Simulated packet loss percentage (0-100); default: 0" );
@@ -185,8 +207,8 @@ int main( int argc, char* argv[] )
     {
         char header_buf[ 50 ];
         fread(header_buf, sizeof(char), 1, bitInFile);
-        header_buf[ strlen( "" ) ] = '\0'; /* Terminate with a null character */
-        if( strcmp( header_buf, "" ) != 0 ) {
+        header_buf[ strlen( "\x02" ) ] = '\0'; /* Terminate with a null character */
+        if( strcmp( header_buf, "\x02" ) != 0 ) {
            counter = fread( header_buf, sizeof( char ), strlen( "!SILK_V3" ), bitInFile );
            header_buf[ strlen( "!SILK_V3" ) ] = '\0'; /* Terminate with a null character */
            if( strcmp( header_buf, "!SILK_V3" ) != 0 ) {
@@ -210,6 +232,9 @@ int main( int argc, char* argv[] )
         printf( "Error: could not open output file %s\n", speechOutFileName );
         exit( 0 );
     }
+    wav_header_t wav_header;
+    memset(&wav_header, 0, sizeof(wav_header_t));
+    fwrite(&wav_header, sizeof(wav_header_t), 1, speechOutFile);
 
     /* Set the samplingrate that is requested for the output */
     if( API_Fs_Hz == 0 ) {
@@ -480,6 +505,25 @@ int main( int argc, char* argv[] )
     if( !quiet ) {
         printf( "\nDecoding Finished \n" );
     }
+
+    long dataSize = ftell(speechOutFile) - sizeof(wav_header_t);
+    fseek(speechOutFile, 0, SEEK_SET);
+
+    memcpy(&wav_header.RiffMagic, "RIFF", 4);
+    wav_header.FileSize = sizeof(wav_header_t) - 8 + dataSize; // excluding "RIFF"+size
+    memcpy(&wav_header.FormatMagic, "WAVE", 4);
+    memcpy(&wav_header.FormatChunk_Magic, "fmt ", 4);
+    wav_header.FormatChunk_Size = WAV_FORMAT_CHUNK_SIZE;
+    wav_header.FormatChunk_Format = 1; // PCM
+    wav_header.FormatChunk_Channels = 1; // Mono
+    wav_header.FormatChunk_SampleRate = DecControl.API_sampleRate;
+    wav_header.FormatChunk_ByteRate = wav_header.FormatChunk_SampleRate * 2 * 1; // 16bits, 1 channel
+    wav_header.FormatChunk_BytesPerSample = 2;
+    wav_header.FormatChunk_BitsPerSample = 16;
+    memcpy(&wav_header.DataChunk_Magic, "data", 4);
+    wav_header.DataChunk_Size = dataSize;
+    fwrite(&wav_header, sizeof(wav_header_t), 1, speechOutFile);
+
 
     /* Free decoder */
     free( psDec );

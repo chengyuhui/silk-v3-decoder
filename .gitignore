@@ -1,0 +1,5 @@
+*.o
+*.a
+*.exe
+/silk/decoder
+/silk/encoder
